@@ -75,6 +75,11 @@ on:
         required: true
         type: boolean
         default: 'false'
+      nomount_enable:
+        description: '是否启用NoMount免挂载元模块(提供应用隐藏、路径遮罩等, 配合Root环境使用)'
+        required: true
+        type: boolean
+        default: 'false'
       baseband_guard:
         description: '是否开启内核级基带保护(阻止一切对非用户分区的写入，有效防止格机)'
         required: true
@@ -419,6 +424,10 @@ jobs:
           #启用 IPv6 网络地址转换
           echo "CONFIG_IP6_NF_NAT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> ./common/arch/arm64/configs/gki_defconfig
+          #启用网络队列调度器(FQ / FQ-CoDel / CAKE)
+          echo "CONFIG_NET_SCH_FQ=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NET_SCH_FQ_CODEL=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NET_SCH_CAKE=y" >> ./common/arch/arm64/configs/gki_defconfig
           #由于部分机型的vintf兼容性检测规则，在开启CONFIG_IP6_NF_NAT后开机会出现"您的设备内部出现了问题。请联系您的设备制造商了解详情。"的提示，故添加一个配置修复补丁，在编译内核时隐藏CONFIG_IP6_NF_NAT=y但不影响对应功能编译
           cd common
           wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/config.patch
@@ -520,12 +529,47 @@ jobs:
           echo "CONFIG_MQ_IOSCHED_SSG=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_MQ_IOSCHED_SSG_CGROUP=y" >> ./common/arch/arm64/configs/gki_defconfig
 
+      - name: 启用NoMount免挂载元模块
+        if: inputs.nomount_enable
+        run: |
+          echo "正在接入 NoMount 免挂载元模块(应用隐藏/路径遮罩)…"
+          cd kernel_workspace/common
+          curl -LSs https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -s dev
+          if [ -L fs/nomount ]; then
+            echo "已接入 NoMount（fs/nomount 软链接存在）"
+          else
+            echo "警告: 未检测到 fs/nomount 软链接，NoMount 可能未接入"
+          fi
+          echo "CONFIG_NOMOUNT=y" >> ./arch/arm64/configs/gki_defconfig
+
       - name: 启用Re-Kernel支持
         if: inputs.rekernel_enable
         run: |
-          echo "正在启用Re-Kernel支持(用于与Freezer,NoActive等软件配合使用,提升冻结后台能力)…"
-          cd kernel_workspace
-          echo "CONFIG_REKERNEL=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "正在接入 Re-Kernel 源码集成(用于与 Freezer/NoActive 等软件配合, 提升应用冻结能力)…"
+          cd kernel_workspace/common
+          git clone --depth=1 https://github.com/Sakion-Team/Re-Kernel.git /tmp/rekernel
+          mkdir -p drivers/rekernel
+          cp -r /tmp/rekernel/Integrate/rekernel/. drivers/rekernel/
+          # 兼容 6.1 内建 proc_ops 接口
+          if grep -q 'struct proc_ops' include/linux/proc_fs.h; then
+            sed -i 's/file_operations/proc_ops/' drivers/rekernel/rekernel.c
+            sed -i 's/\.open/\.proc_open/' drivers/rekernel/rekernel.c
+            sed -i 's/\.read/\.proc_read/' drivers/rekernel/rekernel.c
+            sed -i 's/\.llseek/\.proc_lseek/' drivers/rekernel/rekernel.c
+            sed -i 's/\.release/\.proc_release/' drivers/rekernel/rekernel.c
+          fi
+          # 补 freezer v2 backport 可能缺失的 jobctl 头文件
+          grep -q 'linux/sched/jobctl.h' drivers/rekernel/rekernel.h \
+            || sed -i '/#include <linux\/freezer.h>/a\#include <linux/sched/jobctl.h>' drivers/rekernel/rekernel.h
+          # 接线 drivers/Kconfig 与 drivers/Makefile
+          if ! grep -q 'drivers/rekernel/Kconfig' drivers/Kconfig; then
+            sed -i '/endmenu/i source "drivers/rekernel/Kconfig"' drivers/Kconfig
+          fi
+          if ! grep -q 'drivers/rekernel' drivers/Makefile; then
+            echo 'obj-$(CONFIG_REKERNEL) += rekernel/' >> drivers/Makefile
+          fi
+          echo "CONFIG_REKERNEL=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_REKERNEL_NETWORK=y" >> ./arch/arm64/configs/gki_defconfig
 
       - name: 启用内核级基带保护
         if: inputs.baseband_guard
@@ -718,6 +762,7 @@ jobs:
           echo "Droidspaces: ${{ github.event.inputs.droidspaces_enable }}" >> ./ak3.log
           echo "SSG: ${{ github.event.inputs.ssg_enable }}" >> ./ak3.log
           echo "Re-Kernel: ${{ github.event.inputs.rekernel_enable }}" >> ./ak3.log
+          echo "NoMount: ${{ github.event.inputs.nomount_enable }}" >> ./ak3.log
           echo "BBG: ${{ github.event.inputs.baseband_guard }}" >> ./ak3.log
           zip -z ../$AK3_NAME < ./ak3.log
 
@@ -801,6 +846,7 @@ jobs:
           - Droidspaces 容器支持：${{ github.event.inputs.droidspaces_enable }}
           - 三星SSG IO调度器支持：${{ github.event.inputs.ssg_enable }}
           - Re-Kernel支持：${{ github.event.inputs.rekernel_enable }}
+          - NoMount免挂载元模块：${{ github.event.inputs.nomount_enable }}
           - 内核级基带保护支持：${{ github.event.inputs.baseband_guard }}
           - BakaSU管理器下载：[BakaSU_CI](https://github.com/cctv18/BakaSU_CI/releases)
           - SukiSU Ultra管理器下载：[SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases)
