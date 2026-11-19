@@ -546,22 +546,27 @@ jobs:
       - name: 启用Re-Kernel支持
         if: inputs.rekernel_enable
         run: |
-          echo "正在接入 Re-Kernel 源码集成(用于与 Freezer/NoActive 等软件配合, 提升应用冻结能力)…"
+          echo "正在启用 Re-Kernel(与 Freezer/NoActive 等软件配合, 提升应用冻结能力)…"
           cd kernel_workspace/common
-          git clone --depth=1 https://github.com/Sakion-Team/Re-Kernel.git /tmp/rekernel
-          mkdir -p drivers/rekernel
-          cp -r /tmp/rekernel/Integrate/rekernel/. drivers/rekernel/
-          # 兼容 6.1 内建 proc_ops 接口
-          if grep -q 'struct proc_ops' include/linux/proc_fs.h; then
-            sed -i 's/file_operations/proc_ops/' drivers/rekernel/rekernel.c
-            sed -i 's/\.open/\.proc_open/' drivers/rekernel/rekernel.c
-            sed -i 's/\.read/\.proc_read/' drivers/rekernel/rekernel.c
-            sed -i 's/\.llseek/\.proc_lseek/' drivers/rekernel/rekernel.c
-            sed -i 's/\.release/\.proc_release/' drivers/rekernel/rekernel.c
+          # 该 6.1 源码已内置适配本机型的 drivers/rekernel（proc_ops 实现），优先使用内置版本，
+          # 只有源码里确实没有时才回退到上游 Integrate 通用版本
+          if [ -f drivers/rekernel/rekernel.c ]; then
+            echo "检测到源码内置 drivers/rekernel，使用内置实现，不覆盖"
+          else
+            echo "源码未内置 Re-Kernel，回退到上游 Integrate 版本"
+            git clone --depth=1 https://github.com/Sakion-Team/Re-Kernel.git /tmp/rekernel
+            mkdir -p drivers/rekernel
+            cp -r /tmp/rekernel/Integrate/rekernel/. drivers/rekernel/
+            if grep -q 'struct proc_ops' include/linux/proc_fs.h; then
+              sed -i 's/file_operations/proc_ops/' drivers/rekernel/rekernel.c
+              sed -i 's/\.open/\.proc_open/' drivers/rekernel/rekernel.c
+              sed -i 's/\.read/\.proc_read/' drivers/rekernel/rekernel.c
+              sed -i 's/\.llseek/\.proc_lseek/' drivers/rekernel/rekernel.c
+              sed -i 's/\.release/\.proc_release/' drivers/rekernel/rekernel.c
+            fi
+            grep -q 'linux/sched/jobctl.h' drivers/rekernel/rekernel.h \
+              || sed -i '/#include <linux\/freezer.h>/a\#include <linux/sched/jobctl.h>' drivers/rekernel/rekernel.h
           fi
-          # 补 freezer v2 backport 可能缺失的 jobctl 头文件
-          grep -q 'linux/sched/jobctl.h' drivers/rekernel/rekernel.h \
-            || sed -i '/#include <linux\/freezer.h>/a\#include <linux/sched/jobctl.h>' drivers/rekernel/rekernel.h
           # 接线 drivers/Kconfig 与 drivers/Makefile
           if ! grep -q 'drivers/rekernel/Kconfig' drivers/Kconfig; then
             sed -i '/endmenu/i source "drivers/rekernel/Kconfig"' drivers/Kconfig
@@ -569,8 +574,11 @@ jobs:
           if ! grep -q 'drivers/rekernel' drivers/Makefile; then
             echo 'obj-$(CONFIG_REKERNEL) += rekernel/' >> drivers/Makefile
           fi
-          echo "CONFIG_REKERNEL=y" >> ./arch/arm64/configs/gki_defconfig
-          echo "CONFIG_REKERNEL_NETWORK=y" >> ./arch/arm64/configs/gki_defconfig
+          grep -q '^CONFIG_REKERNEL=y' ./arch/arm64/configs/gki_defconfig \
+            || echo "CONFIG_REKERNEL=y" >> ./arch/arm64/configs/gki_defconfig
+          grep -q '^CONFIG_REKERNEL_NETWORK=y' ./arch/arm64/configs/gki_defconfig \
+            || echo "CONFIG_REKERNEL_NETWORK=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "Re-Kernel 接线完成，defconfig 已写入 CONFIG_REKERNEL=y"
 
       - name: 启用内核级基带保护
         if: inputs.baseband_guard
@@ -681,6 +689,27 @@ jobs:
           ccache -s
           echo "编译后空间:"
           df -h
+
+      - name: 校验关键配置与产物
+        if: always()
+        run: |
+          cd kernel_workspace/common
+          echo "=== .config 关键项 ==="
+          for k in CONFIG_REKERNEL CONFIG_NOMOUNT CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_MAP CONFIG_NET_SCH_FQ CONFIG_NET_SCH_FQ_CODEL CONFIG_NET_SCH_CAKE CONFIG_MQ_IOSCHED_SSG CONFIG_BBG; do
+            val=$(grep -E "^$k=|^# $k is not set" out/.config 2>/dev/null | head -1)
+            if [ -z "$val" ]; then
+              echo "::warning::$k 未出现在 .config（Kconfig 未定义或未启用）"
+            else
+              echo "$val"
+            fi
+          done
+          echo "=== 关键产物 ==="
+          for f in drivers/rekernel/rekernel.o fs/nomount/nomount.o; do
+            if [ -f "out/$f" ]; then echo "OK  $f"; else echo "::warning::缺失 $f"; fi
+          done
+          if [ -f out/arch/arm64/boot/Image ]; then
+            echo "Image: $(ls -lh out/arch/arm64/boot/Image | awk '{print $5}')"
+          fi
 
       - name: 保存新的 ccache 缓存
         if: inputs.ccache_update || steps.ccache-restore.outputs.cache-hit != 'true'
