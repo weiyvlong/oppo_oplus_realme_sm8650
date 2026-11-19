@@ -694,22 +694,105 @@ jobs:
         if: always()
         run: |
           cd kernel_workspace/common
-          echo "=== .config 关键项 ==="
-          for k in CONFIG_REKERNEL CONFIG_NOMOUNT CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_MAP CONFIG_NET_SCH_FQ CONFIG_NET_SCH_FQ_CODEL CONFIG_NET_SCH_CAKE CONFIG_MQ_IOSCHED_SSG CONFIG_BBG; do
-            val=$(grep -E "^$k=|^# $k is not set" out/.config 2>/dev/null | head -1)
-            if [ -z "$val" ]; then
-              echo "::warning::$k 未出现在 .config（Kconfig 未定义或未启用）"
-            else
-              echo "$val"
-            fi
-          done
-          echo "=== 关键产物 ==="
-          for f in drivers/rekernel/rekernel.o fs/nomount/nomount.o; do
-            if [ -f "out/$f" ]; then echo "OK  $f"; else echo "::warning::缺失 $f"; fi
-          done
-          if [ -f out/arch/arm64/boot/Image ]; then
-            echo "Image: $(ls -lh out/arch/arm64/boot/Image | awk '{print $5}')"
+          CFG=out/.config
+          if [ ! -f "$CFG" ]; then
+            echo "::warning::未找到 out/.config，跳过配置校验"
+            exit 0
           fi
+          BAD=0
+          # chk <CONFIG名> <是否启用 true/false>：启用却缺失或未生效记一条 warning
+          chk() {
+            if [ "$2" != "true" ]; then
+              echo "SKIP  $1（开关未启用）"
+              return 0
+            fi
+            line=$(grep -E "^$1=|^# $1 is not set" "$CFG" | head -1)
+            if [ -z "$line" ]; then
+              echo "::warning::$1 未出现在 .config（Kconfig 未定义，开关空转）"
+              BAD=$((BAD+1))
+            elif printf '%s' "$line" | grep -q "^$1=y"; then
+              echo "OK    $1=y"
+            else
+              echo "::warning::$1 存在但未生效：$line"
+              BAD=$((BAD+1))
+            fi
+          }
+          # note <CONFIG名>：历史遗留、上游无 Kconfig 定义的惰性项，只记录不报警
+          note() {
+            if grep -qE "^$1=|^# $1 is not set" "$CFG"; then
+              echo "NOTICE $1 在 .config 中存在"
+            else
+              echo "NOTICE $1 无 Kconfig 定义，写入 defconfig 会被丢弃，无实际行为"
+            fi
+          }
+
+          echo "=== SUSFS ==="
+          S="${{ github.event.inputs.susfs_enable }}"
+          chk CONFIG_KSU_SUSFS "$S"
+          for c in CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_MAP \
+                   CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+                   CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+                   CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_ENABLE_LOG \
+                   CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER; do
+            chk "$c" "$S"
+          done
+          for c in CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+                   CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT CONFIG_KSU_SUSFS_TRY_UMOUNT \
+                   CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT; do
+            if [ "$S" = "true" ]; then note "$c"; fi
+          done
+
+          echo "=== 隐藏 / 冻结 ==="
+          chk CONFIG_NOMOUNT "${{ github.event.inputs.nomount_enable }}"
+          chk CONFIG_REKERNEL "${{ github.event.inputs.rekernel_enable }}"
+          chk CONFIG_REKERNEL_NETWORK "${{ github.event.inputs.rekernel_enable }}"
+
+          echo "=== 内存压缩 ==="
+          L="${{ github.event.inputs.lz4kd_enable }}"
+          for c in CONFIG_ZSMALLOC CONFIG_CRYPTO_LZ4KD CONFIG_CRYPTO_LZ4K CONFIG_CRYPTO_LZ4HC CONFIG_CRYPTO_842; do
+            chk "$c" "$L"
+          done
+
+          echo "=== 网络 ==="
+          N="${{ github.event.inputs.better_net }}"
+          for c in CONFIG_IP_SET CONFIG_NETFILTER_XT_SET CONFIG_NETFILTER_XT_MATCH_ADDRTYPE \
+                   CONFIG_NET_SCH_FQ CONFIG_NET_SCH_FQ_CODEL CONFIG_NET_SCH_CAKE; do
+            chk "$c" "$N"
+          done
+          if [ "$N" = "true" ]; then note CONFIG_IP6_NF_NAT; fi
+          B="${{ github.event.inputs.bbr_enable }}"
+          if [ "$B" != "false" ]; then
+            chk CONFIG_TCP_CONG_BBR true
+            chk CONFIG_TCP_CONG_BRUTAL true
+            echo "NOTICE 默认拥塞算法：$(grep -E '^CONFIG_DEFAULT_TCP_CONG=' "$CFG" | head -1)"
+          else
+            echo "SKIP  拥塞控制算法（开关未启用）"
+          fi
+
+          echo "=== 容器 / IO / 安全 ==="
+          D="${{ github.event.inputs.droidspaces_enable }}"
+          if [ "$D" != "false" ]; then
+            for c in CONFIG_NTSYNC CONFIG_USER_NS CONFIG_PID_NS CONFIG_SYSVIPC CONFIG_DEVTMPFS \
+                     CONFIG_NAMESPACES CONFIG_POSIX_MQUEUE; do
+              chk "$c" true
+            done
+            if [ "$D" = "extend" ]; then
+              chk CONFIG_DRM_LINDROID_EVDI true
+              chk CONFIG_BT_HCIVHCI true
+            fi
+          else
+            echo "SKIP  DroidSpaces（开关未启用）"
+          fi
+          chk CONFIG_MQ_IOSCHED_SSG "${{ github.event.inputs.ssg_enable }}"
+          chk CONFIG_MQ_IOSCHED_SSG_CGROUP "${{ github.event.inputs.ssg_enable }}"
+          chk CONFIG_BBG "${{ github.event.inputs.baseband_guard }}"
+
+          echo "=== 关键产物 ==="
+          for f in drivers/rekernel/rekernel.o fs/nomount/nomount.o fs/ntsync/ntsync.o; do
+            if [ -f "out/$f" ]; then echo "OK  $f"; else echo "INFO 未生成 $f（可能对应开关关闭）"; fi
+          done
+          if [ -f out/arch/arm64/boot/Image ]; then echo "Image: $(ls -lh out/arch/arm64/boot/Image | awk '{print $5}')"; fi
+          echo "=== 校验结论：未生效/未定义配置项 $BAD 个 ==="
 
       - name: 保存新的 ccache 缓存
         if: inputs.ccache_update || steps.ccache-restore.outputs.cache-hit != 'true'
