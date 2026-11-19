@@ -313,6 +313,10 @@ jobs:
             patch -p1 -F 3 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
             patch -p1 -N -F 3 < 69_hide_stuff.patch || true
             cd ..
+            # 反检测：SUSFS 源码里硬编码的 KSU 域名一并换新名，否则 setup_selinux 会失败
+            sed -i 's/u:r:ksu:s0/u:r:shl:s0/g' ./common/fs/susfs.c
+            if grep -q 'u:r:ksu:s0' ./common/fs/susfs.c; then echo "FATAL: susfs.c 仍残留 u:r:ksu:s0"; exit 1; fi
+            grep -n 'u:r:shl:s0' ./common/fs/susfs.c
           else
             echo "已选择无内置KernelSU模式，跳过susfs配置..."
           fi
