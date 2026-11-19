@@ -316,6 +316,38 @@ jobs:
             cd ./KernelSU
             patch -p1 -F 3 < 10_enable_susfs_for_ksu.patch || true
           fi
+          echo "正在校验 SUSFS 命令分发分支..."
+          cd "$GITHUB_WORKSPACE/kernel_workspace" 2>/dev/null || true
+          python3 - <<'PY'
+          import sys, pathlib
+          p = pathlib.Path('KernelSU/kernel/supercall/dispatch.c')
+          if not p.exists():
+              print('[-] 致命：找不到 KernelSU/kernel/supercall/dispatch.c')
+              sys.exit(1)
+          s = p.read_text()
+          key = 'int ksu_handle_susfs_cmd('
+          i = s.find(key)
+          if i < 0:
+              print('[-] 致命：dispatch.c 中找不到 ksu_handle_susfs_cmd')
+              sys.exit(1)
+          if 'CMD_SUSFS_SET_PRIORITY_UID_FILTER' in s[i:]:
+              print('[=] PRIORITY_UID_FILTER 分发分支已存在，跳过注入')
+          else:
+              anchor = '    case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING'
+              j = s[i:].find(anchor)
+              if j < 0:
+                  print('[-] 致命：找不到插入锚点 CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING')
+                  sys.exit(1)
+              block = ('#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n'
+                       '    case CMD_SUSFS_SET_PRIORITY_UID_FILTER: {\n'
+                       '        susfs_set_priority_uid_filter(arg);\n'
+                       '        return 0;\n'
+                       '    }\n'
+                       '#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n')
+              s = s[:i + j] + block + s[i + j:]
+              p.write_text(s)
+              print('[+] 已注入 PRIORITY_UID_FILTER 分发分支')
+          PY
           
       - name: 应用lz4 1.10.0 & zstd 1.5.7补丁
         if: inputs.lz4_enable
