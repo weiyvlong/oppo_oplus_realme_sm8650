@@ -349,6 +349,27 @@ jobs:
         if: inputs.susfs_enable
         run: |
           cd kernel_workspace
+          # BakaSU/KernelSU 自带的 Kconfig 没有定义 PRIORITY_UID_FILTER，而 SUSFS 源码里有该特性的
+          # #ifdef 守卫；不补 Kconfig 定义，defconfig 里写 =y 会被丢弃、功能永远关闭。这里幂等补上。
+          for KCFG in ./KernelSU/kernel/Kconfig ./KernelSU-Next/kernel/Kconfig; do
+            if [ -f "$KCFG" ] && ! grep -q 'config KSU_SUSFS_PRIORITY_UID_FILTER' "$KCFG"; then
+              # 插到 SUSFS 那组 config 所在 menu 的 endmenu 之前（SUS_MAP 之后第一个 endmenu）
+              LAST=$(awk '/config KSU_SUSFS_SUS_MAP/{f=1} f&&/^endmenu/{print NR; exit}' "$KCFG")
+              if [ -z "$LAST" ]; then LAST=$(grep -n '^endmenu' "$KCFG" | tail -1 | cut -d: -f1); fi
+              if [ -z "$LAST" ]; then LAST=$(( $(wc -l < "$KCFG") + 1 )); fi
+              { head -n $((LAST-1)) "$KCFG";
+                printf '%s\n' \
+                  'config KSU_SUSFS_PRIORITY_UID_FILTER' \
+                  '    bool "Enable to filter out priority UIDs"' \
+                  '    depends on KSU_SUSFS' \
+                  '    default y' \
+                  '    help' \
+                  '        - Allow filtering out the priority UIDs defined by users.';
+                tail -n +"$LAST" "$KCFG"; } > /tmp/kcfg.new
+              mv /tmp/kcfg.new "$KCFG"
+              echo "已为 $KCFG 补上 KSU_SUSFS_PRIORITY_UID_FILTER 定义"
+            fi
+          done
           echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -710,8 +731,10 @@ jobs:
             if [ -z "$line" ]; then
               echo "::warning::$1 未出现在 .config（Kconfig 未定义，开关空转）"
               BAD=$((BAD+1))
-            elif printf '%s' "$line" | grep -q "^$1=y"; then
+            elif printf '%s' "$line" | grep -qE "^$1=y$"; then
               echo "OK    $1=y"
+            elif printf '%s' "$line" | grep -qE "^$1=m$"; then
+              echo "OK    $1=m（以内核模块方式启用）"
             else
               echo "::warning::$1 存在但未生效：$line"
               BAD=$((BAD+1))
@@ -745,7 +768,10 @@ jobs:
           echo "=== 隐藏 / 冻结 ==="
           chk CONFIG_NOMOUNT "${{ github.event.inputs.nomount_enable }}"
           chk CONFIG_REKERNEL "${{ github.event.inputs.rekernel_enable }}"
-          chk CONFIG_REKERNEL_NETWORK "${{ github.event.inputs.rekernel_enable }}"
+          # 内置 drivers/rekernel 的 Kconfig 只定义 CONFIG_REKERNEL，没有 REKERNEL_NETWORK
+          grep -q 'config REKERNEL_NETWORK' drivers/rekernel/Kconfig 2>/dev/null \
+            && chk CONFIG_REKERNEL_NETWORK "${{ github.event.inputs.rekernel_enable }}" \
+            || echo "NOTICE 内置 Re-Kernel 无 REKERNEL_NETWORK 开关，该项不写入"
 
           echo "=== 内存压缩 ==="
           L="${{ github.event.inputs.lz4kd_enable }}"
