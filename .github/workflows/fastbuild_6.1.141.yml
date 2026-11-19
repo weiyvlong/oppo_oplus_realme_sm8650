@@ -330,23 +330,37 @@ jobs:
           if i < 0:
               print('[-] 致命：dispatch.c 中找不到 ksu_handle_susfs_cmd')
               sys.exit(1)
-          if 'CMD_SUSFS_SET_PRIORITY_UID_FILTER' in s[i:]:
-              print('[=] PRIORITY_UID_FILTER 分发分支已存在，跳过注入')
+          seg = s[i:]
+          blocks = []
+          if 'CMD_SUSFS_SET_SUS_PATH_UID_FILTER' in seg:
+              print('[=] SUS_PATH_UID_FILTER 分发分支已存在')
           else:
+              blocks.append('#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n'
+                            '    case CMD_SUSFS_SET_SUS_PATH_UID_FILTER: {\n'
+                            '        susfs_set_sus_path_uid_filter(arg);\n'
+                            '        return 0;\n'
+                            '    }\n'
+                            '#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH\n')
+          if 'CMD_SUSFS_SET_PRIORITY_UID_FILTER' in seg:
+              print('[=] PRIORITY_UID_FILTER 分发分支已存在')
+          else:
+              blocks.append('#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n'
+                            '    case CMD_SUSFS_SET_PRIORITY_UID_FILTER: {\n'
+                            '        susfs_set_priority_uid_filter(arg);\n'
+                            '        return 0;\n'
+                            '    }\n'
+                            '#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n')
+          if blocks:
               anchor = '    case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING'
-              j = s[i:].find(anchor)
+              j = seg.find(anchor)
               if j < 0:
                   print('[-] 致命：找不到插入锚点 CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING')
                   sys.exit(1)
-              block = ('#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n'
-                       '    case CMD_SUSFS_SET_PRIORITY_UID_FILTER: {\n'
-                       '        susfs_set_priority_uid_filter(arg);\n'
-                       '        return 0;\n'
-                       '    }\n'
-                       '#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n')
-              s = s[:i + j] + block + s[i + j:]
+              s = s[:i + j] + ''.join(blocks) + s[i + j:]
               p.write_text(s)
-              print('[+] 已注入 PRIORITY_UID_FILTER 分发分支')
+              print('[+] 已注入 %d 个 SUSFS 分发分支' % len(blocks))
+          else:
+              print('[=] 所有 SUSFS 分发分支均已存在，跳过注入')
           PY
           
       - name: 应用lz4 1.10.0 & zstd 1.5.7补丁
