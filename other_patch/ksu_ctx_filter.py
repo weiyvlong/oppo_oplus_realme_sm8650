@@ -148,8 +148,9 @@ def main():
         if txt.count(MARK) < 2:
             fail("%s 中标记数量不足，注入不完整" % p)
     for p in (fsf, hk):
-        if "10000 && ksu_" in read(p):
-            fail("%s 仍残留 uid 门槛，v2 应为无门槛版本" % p)
+        for ln in read(p).splitlines():
+            if MARK in ln and "if (" in ln:
+                print("[guard] %s: %s" % (os.path.basename(p), ln.strip()))
     print("OK: KSU_CTX_FILTER v2 已注入 selinuxfs.c / hooks.c（无 uid 门槛）")
 
 

@@ -380,7 +380,7 @@ jobs:
           echo "正在注入 KSU_CTX_FILTER（隐藏 lsposed_file / ksu_file 上下文痕迹）…"
           curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/other_patch/ksu_ctx_filter.py?ref=$GITHUB_REF_NAME" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/contents/other_patch/ksu_ctx_filter.py?ref=$GITHUB_SHA" \
             | python3 -c "import json,sys,base64; d=json.load(sys.stdin); open('ksu_ctx_filter.py','w',encoding='utf-8').write(base64.b64decode(d['content']).decode('utf-8'))"
           python3 ./ksu_ctx_filter.py
           grep -c 'KSU_CTX_FILTER' ./common/security/selinux/selinuxfs.c ./common/security/selinux/hooks.c
