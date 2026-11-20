@@ -373,6 +373,15 @@ jobs:
               print('[=] 所有 SUSFS 分发分支均已存在，跳过注入')
           PY
           
+      - name: 反检测 SELinux 上下文过滤补丁
+        if: inputs.susfs_enable
+        run: |
+          cd kernel_workspace
+          echo "正在注入 KSU_CTX_FILTER（隐藏 lsposed_file / ksu_file 上下文痕迹）…"
+          wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/ksu_ctx_filter.py -O ./ksu_ctx_filter.py
+          python3 ./ksu_ctx_filter.py
+          grep -c 'KSU_CTX_FILTER' ./common/security/selinux/selinuxfs.c ./common/security/selinux/hooks.c
+
       - name: 应用lz4 1.10.0 & zstd 1.5.7补丁
         if: inputs.lz4_enable
         run: |
