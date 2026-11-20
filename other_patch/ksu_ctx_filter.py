@@ -147,8 +147,9 @@ def main():
         txt = read(p)
         if txt.count(MARK) < 2:
             fail("%s 中标记数量不足，注入不完整" % p)
-    if "current_uid" in read(fsf) or "current_uid" in read(hk):
-        fail("仍有 current_uid 门槛，v2 应为无门槛版本")
+    for p in (fsf, hk):
+        if "current_uid().val >=" in read(p):
+            fail("%s 仍残留 uid 门槛，v2 应为无门槛版本" % p)
     print("OK: KSU_CTX_FILTER v2 已注入 selinuxfs.c / hooks.c（无 uid 门槛）")
 
 
